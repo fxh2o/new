@@ -7,13 +7,15 @@
     const params = new URLSearchParams();
     params.set('table', table);
     if (state.select) params.set('select', state.select);
-    for (const [key, value] of state.filters) params.append(key, value);
+    for (const [op, column, value] of state.filters) params.append(op, `${column}=${value}`);
     if (state.order.length) params.set('order', state.order.map(x => `${x.column}.${x.ascending ? 'asc' : 'desc'}`).join(','));
-    if (state.range) params.set('from', String(state.range[0]));
-    if (state.range) params.set('to', String(state.range[1]));
+    if (state.range) {
+      params.set('from', String(state.range[0]));
+      params.set('to', String(state.range[1]));
+    }
     if (state.limit != null) params.set('limit', String(state.limit));
 
-    const promise = fetch(`${API}?${params.toString()}`, {
+    return fetch(`${API}?${params.toString()}`, {
       method: 'GET',
       headers: { Accept: 'application/json' },
       credentials: 'omit',
@@ -23,7 +25,6 @@
       if (!response.ok) return { data: null, error: new Error(body.error || `Request failed (${response.status})`) };
       return { data: body.data ?? null, error: null };
     });
-    return promise;
   }
 
   function builder(table) {
@@ -39,10 +40,7 @@
       limit(value) { state.limit = value; return chain; },
       maybeSingle() {
         state.limit = 1;
-        return request(table, state).then(result => ({
-          data: Array.isArray(result.data) ? (result.data[0] ?? null) : result.data,
-          error: result.error,
-        }));
+        return request(table, state).then(result => ({ data: Array.isArray(result.data) ? (result.data[0] ?? null) : result.data, error: result.error }));
       },
       then(resolve, reject) { return request(table, state).then(resolve, reject); },
       catch(reject) { return request(table, state).catch(reject); },
@@ -50,15 +48,11 @@
     return chain;
   }
 
-  window.ANIPASTA_SUPABASE_CONFIG = { url: 'https://gateway.invalid', key: 'public-placeholder' };
+  // Deliberately fake values: the real Supabase URL/key never enter the browser bundle.
+  window.ANIPASTA_SUPABASE_CONFIG = { url: 'https://gateway.invalid', key: 'browser-placeholder' };
   window.supabase = {
     createClient() {
-      return {
-        from: builder,
-        auth: {
-          getUser: async () => ({ data: { user: null }, error: null }),
-        },
-      };
+      return { from: builder, auth: { getUser: async () => ({ data: { user: null }, error: null }) } };
     },
   };
 })();
