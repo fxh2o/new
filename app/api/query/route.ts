@@ -3,7 +3,24 @@ import { createServerSupabase, getBearerToken } from '../../../lib/supabase-serv
 
 export const runtime = 'nodejs';
 
-const ALLOWED_TABLES = new Set(['anime', 'episodes', 'notifications']);
+const TABLE_RULES: Record<string, { columns: Set<string>; filterColumns: Set<string>; orderColumns: Set<string> }> = {
+  anime: {
+    columns: new Set(['id', 'title', 'poster_url', 'content_type', 'is_published', 'movie_duration', 'movie_url', 'download_links', 'created_at']),
+    filterColumns: new Set(['id', 'title', 'content_type', 'is_published']),
+    orderColumns: new Set(['created_at', 'title']),
+  },
+  episodes: {
+    columns: new Set(['id', 'anime_id', 'season_number', 'episode_number', 'video_url', 'created_at']),
+    filterColumns: new Set(['id', 'anime_id']),
+    orderColumns: new Set(['season_number', 'episode_number', 'created_at']),
+  },
+  notifications: {
+    columns: new Set(['id', 'title', 'message', 'created_at', 'expires_at', 'is_active']),
+    filterColumns: new Set(['is_active', 'expires_at']),
+    orderColumns: new Set(['created_at', 'expires_at']),
+  },
+};
+
 const FILTERS = new Set(['eq', 'neq', 'gt', 'ilike']);
 const headers = {
   'Cache-Control': 'private, no-store',
@@ -12,13 +29,18 @@ const headers = {
   'Access-Control-Allow-Headers': 'Authorization, Content-Type',
 };
 
-function safeColumns(raw: string | null) {
+function safeColumns(raw: string | null, rule: typeof TABLE_RULES[string]) {
   const value = (raw || '*').trim();
-  if (!value || value === '*') return '*';
+  if (value === '*') return [...rule.columns].join(',');
   const columns = value.split(',').map(x => x.trim()).filter(Boolean);
-  if (!columns.length || columns.length > 25) throw new Error('Invalid select');
-  if (columns.some(x => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(x))) throw new Error('Invalid select');
+  if (!columns.length || columns.length > rule.columns.size || columns.some(x => !rule.columns.has(x))) {
+    throw new Error('Invalid select');
+  }
   return columns.join(',');
+}
+
+function safeIdentifier(value: string, allowed: Set<string>) {
+  return allowed.has(value) ? value : null;
 }
 
 export async function OPTIONS() {
@@ -28,19 +50,18 @@ export async function OPTIONS() {
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
-    const table = url.searchParams.get('table');
-    if (!table || !ALLOWED_TABLES.has(table)) {
-      return NextResponse.json({ error: 'Unsupported table' }, { status: 400, headers });
-    }
+    const table = url.searchParams.get('table') || '';
+    const rule = TABLE_RULES[table];
+    if (!rule) return NextResponse.json({ error: 'Unsupported table' }, { status: 400, headers });
 
     const db = createServerSupabase(getBearerToken(request));
-    let query = db.from(table).select(safeColumns(url.searchParams.get('select')));
+    let query = db.from(table).select(safeColumns(url.searchParams.get('select'), rule));
 
     for (const [key, value] of url.searchParams.entries()) {
       if (!FILTERS.has(key)) continue;
       const [column, ...rest] = value.split('=');
       const filterValue = rest.join('=');
-      if (!column || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(column) || column.length > 64) {
+      if (!safeIdentifier(column, rule.filterColumns)) {
         return NextResponse.json({ error: 'Invalid filter' }, { status: 400, headers });
       }
       query = key === 'eq' ? query.eq(column, filterValue)
@@ -51,10 +72,9 @@ export async function GET(request: Request) {
 
     const orderRaw = url.searchParams.get('order');
     if (orderRaw) {
-      const parts = orderRaw.split(',').slice(0, 4);
-      for (const part of parts) {
+      for (const part of orderRaw.split(',').slice(0, 4)) {
         const [column, direction] = part.split('.');
-        if (!column || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(column)) throw new Error('Invalid order');
+        if (!safeIdentifier(column, rule.orderColumns)) throw new Error('Invalid order');
         query = query.order(column, { ascending: direction !== 'desc' });
       }
     }
